@@ -121,6 +121,9 @@ class LogStash::Inputs::CloudWatch < LogStash::Inputs::Base
   # Use this for namespaces that need to combine the dimensions like S3 and SNS.
   config :combined, :validate => :boolean, :default => false
 
+  # Start date loading in Date.parse format
+  config :start_date, :validate => :string, :default => ""
+
   def aws_service_endpoint(region)
     { region: region }
   end
@@ -132,6 +135,12 @@ class LogStash::Inputs::CloudWatch < LogStash::Inputs::Base
     raise 'Interval must be divisible by period' unless @interval % @period == 0
 
     @last_check = Time.now
+
+    if @start_date
+      require "date"
+      @start_time = Date.parse(@start_date)
+    end
+
   end # def register
 
   # Runs the poller to get metrics for the provided namespace
@@ -206,6 +215,7 @@ class LogStash::Inputs::CloudWatch < LogStash::Inputs::Base
       decorate(event)
       queue << event
     end
+
   end
 
   # Cleans up an event to remove unneeded fields and format time
@@ -267,14 +277,32 @@ class LogStash::Inputs::CloudWatch < LogStash::Inputs::Base
   #
   # @return [Hash]
   def metric_options(namespace, metric)
-    {
-      namespace: namespace,
-      metric_name: metric,
-      start_time: (Time.now - @interval).iso8601,
-      end_time: Time.now.iso8601,
-      period: @period,
-      statistics: @statistics
+    metrics = {
+      namespace => namespace,
+      metric_name => metric,
+      start_time => (Time.now - @interval).iso8601,
+      end_time => Time.now.iso8601,
+      period => @period,
+      statistics => @statistics
     }
+
+    # Allow to make a loading from the past
+    if @start_date and @start_time
+      one_day = 60*60*24  # seconds * day * hours
+      metrics['start_time'] = @start_time.iso8601
+      metrics['end_time'] = (@start_time + one_day).iso8601
+
+      if metrics['end_time'] < Time.now.iso8601
+        @start_time = metrics['end_time']
+      else
+        # end the process of loading the past
+        metrics['end_time'] = Time.now.iso8601
+        @start_time = false
+      end
+
+    end
+
+    metrics
   end
 
   # Filters used in querying the AWS SDK for resources
